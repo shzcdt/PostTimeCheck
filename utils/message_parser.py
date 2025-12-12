@@ -3,6 +3,8 @@ from telethon_client import client
 from datetime import datetime, timedelta
 import asyncio
 
+EMPTY_POST_TEXTS = {"buffet", "", " ", "\n", "\t", "null", "none"}
+
 
 async def get_last_messages(channel_links, limit=0, days=0):
     """
@@ -80,9 +82,25 @@ async def get_last_messages(channel_links, limit=0, days=0):
                 if hasattr(message, 'reactions') and message.reactions:
                     reactions_count = sum(reaction.count for reaction in message.reactions.results)
 
+                # Фильтр: пропускаем пустые посты (одинаковый текст или 0 комментариев и 0 реакций)
+                text = message.message or ""
+                stripped_text = text.strip().lower()
+
+                # Проверяем, является ли текст одним из незначимых (например, "buffet", пустой и т.д.)
+                # Но считаем его пустым только если нет взаимодействий (комментариев и реакций)
+                is_empty_text = (stripped_text in EMPTY_POST_TEXTS) and (
+                        comments_count == 0 and reactions_count == 0)
+
+                # Также считаем пустым постом, если текст пустой и нет взаимодействий (комментариев и реакций)
+                is_empty_interaction = (not stripped_text and comments_count == 0 and reactions_count == 0)
+
+                if is_empty_text or is_empty_interaction:
+                    skipped_other += 1
+                    continue
+
                 message_data = {
                     "channel": channel_link,
-                    "text": message.message or "",
+                    "text": text,
                     "date": message.date.strftime("%Y-%m-%d %H:%M:%S"),
                     "views": message.views or 0,
                     "comments_count": comments_count,
@@ -203,9 +221,23 @@ async def get_messages_last_month(channel_links, limit=0):
                 reactions_count = sum(r.count for r in message.reactions.results) if hasattr(message,
                                                                                              'reactions') and message.reactions else 0
 
+                # Фильтр: пропускаем пустые посты (одинаковый текст или 0 комментариев и 0 реакций)
+                text = message.message or ""
+                stripped_text = text.strip().lower()
+
+                # Проверяем, является ли текст одним из незначимых (например, "buffet", пустой и т.д.)
+                # Но считаем его пустым только если нет взаимодействий (комментариев и реакций)
+                is_empty_text = (stripped_text in EMPTY_POST_TEXTS) and (comments_count == 0 and reactions_count == 0)
+
+                # Также считаем пустым постом, если текст пустой и нет взаимодействий (комментариев и реакций)
+                is_empty_interaction = (not stripped_text and comments_count == 0 and reactions_count == 0)
+
+                if is_empty_text or is_empty_interaction:
+                    continue
+
                 message_data = {
                     "channel": channel_link,
-                    "text": message.message or "",
+                    "text": text,
                     "date": message.date.strftime("%Y-%m-%d %H:%M:%S"),
                     "views": message.views or 0,
                     "comments_count": comments_count,
