@@ -82,6 +82,10 @@ async def get_last_messages(channel_links, limit=0, days=0):
                 if hasattr(message, 'reactions') and message.reactions:
                     reactions_count = sum(reaction.count for reaction in message.reactions.results)
 
+                forwards_count = 0
+                if hasattr(message, 'forwards'):
+                    forwards_count = message.forwards or 0
+
                 # Фильтр: пропускаем пустые посты (одинаковый текст или 0 комментариев и 0 реакций)
                 text = message.message or ""
                 stripped_text = text.strip().lower()
@@ -105,6 +109,7 @@ async def get_last_messages(channel_links, limit=0, days=0):
                     "views": message.views or 0,
                     "comments_count": comments_count,
                     "reactions_count": reactions_count,
+                    "forwards_count": forwards_count,
                     "message_id": message.id,
                     "raw_date": message.date  # Сохраняем для отладки
                 }

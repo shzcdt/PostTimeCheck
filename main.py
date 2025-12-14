@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from telegram.ext import ConversationHandler, MessageHandler, filters
 from handlers import (
     start, get_channel_link, choose_period, get_post_limit, cancel, help_command,
-    ASK_LINK, ASK_PERIOD, ASK_LIMIT, test_channel_command
+    ASK_LINK, ASK_PERIOD, ASK_LIMIT, test_channel_command, monthly_report_command
 )
 from telethon_client import init_telethon
 
@@ -47,7 +47,7 @@ async def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("test", test_channel_command))
-
+    app.add_handler(CommandHandler("monthly_report", monthly_report_command))
     print("✅ Бот запущен и готов к работе!")
     print(f"🤖 Имя бота: @{(await app.bot.getMe()).username}")
 

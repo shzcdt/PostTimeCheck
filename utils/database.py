@@ -34,31 +34,9 @@ def init_db():
                 print("[V] Добавляем колонку 'comments_count' в таблицу posts...")
                 conn.execute('ALTER TABLE posts ADD COLUMN comments_count INTEGER')
 
-            # Удаляем старую колонку reactions если она есть
-            if 'reactions' in columns:
-                print("[V] Удаляем старую колонку 'reactions'...")
-                # Создаем временную таблицу с новой структурой
-                conn.execute('''
-                    CREATE TABLE posts_new (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        channel TEXT,
-                        text TEXT, 
-                        date TEXT,
-                        views INTEGER, 
-                        comments_count INTEGER,
-                        reactions_count INTEGER
-                    )
-                ''')
-
-                # Копируем данные из старой таблицы
-                conn.execute('''
-                    INSERT INTO posts_new (id, text, date, views, comments_count, reactions_count)
-                    SELECT id, text, date, views, 0, reactions_count FROM posts
-                ''')
-
-                # Удаляем старую таблицу и переименовываем новую
-                conn.execute('DROP TABLE posts')
-                conn.execute('ALTER TABLE posts_new RENAME TO posts')
+        if 'forwards_count' not in columns:
+            print("[V] Добавляем колонку 'forwards_count' в таблицу posts...")
+            conn.execute('ALTER TABLE posts ADD COLUMN forwards_count INTEGER DEFAULT 0')
 
 
 def save_post(data: dict):
@@ -66,8 +44,8 @@ def save_post(data: dict):
     cursor = conn.cursor()
 
     cursor.execute('''
-            INSERT INTO posts (channel, text, date, views, comments_count, reactions_count)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO posts (channel, text, date, views, comments_count, reactions_count, forwards_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', (
         data.get("channel", ""),
         data.get("text", ""),
@@ -75,6 +53,7 @@ def save_post(data: dict):
         data.get("views", 0),
         data.get("comments_count", 0),
         data.get("reactions_count", 0),
+        data.get("forwards_count", 0),
     ))
 
     conn.commit()
