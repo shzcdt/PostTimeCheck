@@ -1,47 +1,59 @@
-# handlers.py — команды бота (/start, /get_messages и т.д.)
+# handlers.py — команды бота (/start, /monthly_report)
 from telegram import Update
-from telegram.ext import ConversationHandler, ContextTypes
+from telegram.ext import ContextTypes, ConversationHandler
 from datetime import datetime, timedelta
+import asyncio
 
-from utils.database import save_post, export_posts_to_excel, init_db, clear_posts_table
-from utils.message_parser import get_last_messages, get_messages_last_month
+from utils.message_parser import get_last_messages, get_monthly_messages
 
-ASK_LINK, ASK_PERIOD, ASK_LIMIT = range(3)
-user_data = {}
+# Константы для ConversationHandler
+ASK_CHANNELS, ASK_MONTH, ASK_YEAR = range(3)
+
 
 async def generate_monthly_report_for_channels(channels, year, month):
     """
-    Generate monthly report for specified channels
+    Generate monthly report for specified channels (1-4 channels)
     """
-    from collections import defaultdict
 
-    # Dictionary to store aggregated data for each channel
+    print(f"[REPORT] Generating report for {len(channels)} channels: {channels}")
+    print(f"[REPORT] Period: {year}-{month:02d}")
+
+    # Используем оптимизированную функцию
+    monthly_posts = await get_monthly_messages(channels, year, month)
+
+    # Группируем посты по каналам
+    posts_by_channel = {}
+    for post in monthly_posts:
+        channel = post['channel']
+        if channel not in posts_by_channel:
+            posts_by_channel[channel] = []
+        posts_by_channel[channel].append(post)
+
+
+    # Словарь для хранения статистики по каналам
     channel_stats = {}
 
     for channel in channels:
-        # Get posts for the specific month and year
-        # We'll collect all posts from the beginning to the end of the month
-        start_date = datetime(year, month, 1)
+        posts = posts_by_channel.get(channel, [])
 
-        # Determine end date (first day of next month)
-        if month == 12:
-            end_date = datetime(year + 1, 1, 1)
-        else:
-            end_date = datetime(year, month + 1, 1)
-
-        # Collect posts for this channel within the date range
-        posts = await get_posts_by_date_range([channel], start_date, end_date)
+        print(f"[REPORT] Channel {channel}: {len(posts)} posts in {month}-{year}")
 
         if posts:
-            # Calculate statistics for this channel
+            # Рассчитываем статистику
             total_posts = len(posts)
             total_views = sum(post.get('views', 0) for post in posts)
             avg_views = round(total_views / total_posts, 2) if total_posts > 0 else 0
+
             total_reactions = sum(post.get('reactions_count', 0) for post in posts)
             total_comments = sum(post.get('comments_count', 0) for post in posts)
             total_forwards = sum(post.get('forwards_count', 0) for post in posts)
 
-            # Calculate coverage ratios
+            # Средние значения на пост
+            avg_reactions = round(total_reactions / total_posts, 2) if total_posts > 0 else 0
+            avg_comments = round(total_comments / total_posts, 2) if total_posts > 0 else 0
+            avg_forwards = round(total_forwards / total_posts, 2) if total_posts > 0 else 0
+
+            # Охваты
             coverage_per_reaction = round(total_views / total_reactions, 2) if total_reactions > 0 else 0
             coverage_per_forward = round(total_views / total_forwards, 2) if total_forwards > 0 else 0
             coverage_per_comment = round(total_views / total_comments, 2) if total_comments > 0 else 0
@@ -49,21 +61,27 @@ async def generate_monthly_report_for_channels(channels, year, month):
             channel_stats[channel] = {
                 'total_posts': total_posts,
                 'avg_views': avg_views,
-                'total_reactions': total_reactions / total_posts,
-                'total_forwards': total_forwards / total_posts,
-                'total_comments': total_comments / total_posts,
+                'total_reactions': total_reactions,
+                'avg_reactions': avg_reactions,
+                'total_comments': total_comments,
+                'avg_comments': avg_comments,
+                'total_forwards': total_forwards,
+                'avg_forwards': avg_forwards,
                 'coverage_per_reaction': coverage_per_reaction,
                 'coverage_per_forward': coverage_per_forward,
                 'coverage_per_comment': coverage_per_comment
             }
         else:
-            # If no posts found, set all values to 0
+            # Если постов нет
             channel_stats[channel] = {
                 'total_posts': 0,
                 'avg_views': 0,
                 'total_reactions': 0,
-                'total_forwards': 0,
+                'avg_reactions': 0,
                 'total_comments': 0,
+                'avg_comments': 0,
+                'total_forwards': 0,
+                'avg_forwards': 0,
                 'coverage_per_reaction': 0,
                 'coverage_per_forward': 0,
                 'coverage_per_comment': 0
@@ -72,383 +90,272 @@ async def generate_monthly_report_for_channels(channels, year, month):
     return channel_stats
 
 
-async def get_posts_by_date_range(channel_links, start_date, end_date):
-    """
-    Get posts from channels within a specific date range
-    """
-    all_messages = []
-
-    if isinstance(channel_links, str):
-        channel_links = [channel_link.strip() for channel_link in channel_links.split(',')]
-
-    from telethon_client import client
-    from telethon.tl.types import Channel
-
-    for channel_link in channel_links:
-        channel_link = channel_link.strip()
-        try:
-            print(f"[DATE_RANGE] Getting channel: {channel_link}")
-            channel = await client.get_entity(channel_link)
-
-            collected_in_channel = 0
-
-            # Iterate through messages within the date range
-            async for message in client.iter_messages(channel, limit=5000):
-                # Check if message date is within our range
-                if start_date <= message.date.replace(tzinfo=None) < end_date:
-                    # Process the message similar to get_last_messages function
-                    comments_count = 0
-                    if hasattr(message, 'replies') and message.replies:
-                        comments_count = message.replies.replies
-
-                    reactions_count = 0
-                    if hasattr(message, 'reactions') and message.reactions:
-                        reactions_count = sum(reaction.count for reaction in message.reactions.results)
-
-                    message_data = {
-                        "channel": channel_link,
-                        "text": message.message or "",
-                        "date": message.date.strftime("%Y-%m-%d %H:%M:%S"),
-                        "views": message.views or 0,
-                        "comments_count": comments_count,
-                        "reactions_count": reactions_count,
-                        "forwards_count": message.forwards or 0,
-                        "message_id": message.id
-                    }
-                    all_messages.append(message_data)
-                    collected_in_channel += 1
-
-                # Break if we've gone beyond the date range (messages are ordered from newest to oldest)
-                elif message.date.replace(tzinfo=None) < start_date:
-                    # Since messages come from newest to oldest, we can stop when we go beyond the start date
-                    break
-
-            print(f"[DATE_RANGE] Collected {collected_in_channel} messages from {channel_link}")
-
-        except Exception as e:
-            print(f"[DATE_RANGE] Error getting channel {channel_link}: {e}")
-            continue
-
-    return all_messages
-
-
-async def monthly_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Command to generate monthly report for 4 channels
-    """
-    # Check if the user has specified channels in their message
-    if not context.args or len(context.args) < 5:  # command + 4 channels
-        await update.message.reply_text(
-            "📊 Команда для генерации ежемесячного отчета по 4 каналам:\n\n"
-            "/monthly_report год месяц @channel1 @channel2 @channel3 @channel4\n\n"
-            "Пример: /monthly_report 2025 1 @channel1 @channel2 @channel3 @channel4\n"
-            "(для отчета за январь 2025 года)"
-        )
-        return
-
-    try:
-        # Parse arguments: year, month, and 4 channels
-        args = context.args
-        year = int(args[0])
-        month = int(args[1])
-        channels = args[2:6]  # 4 channels
-
-        if len(channels) != 4:
-            await update.message.reply_text("❌ Необходимо указать ровно 4 канала")
-            return
-
-        # Validate month
-        if month < 1 or month > 12:
-            await update.message.reply_text("❌ Месяц должен быть от 1 до 12")
-            return
-
-        # Month names for display
-        month_names = [
-            "", "январь", "февраль", "март", "апрель", "май", "июнь",
-            "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"
-        ]
-
-        if year < datetime.now().year:
-            await update.message.reply_text("❌ К сожалению, бот не может орбрабатывать посты, которые были год и более назад")
-            return
-
-
-        # Notify user about starting collection
-        processing_msg = await update.message.reply_text(
-            f"🔄 Собираю статистику за {month_names[month]} {year} года по 4 каналам..."
-        )
-
-        # Generate the report
-        channel_stats = await generate_monthly_report_for_channels(channels, year, month)
-
-        # Format and send the report
-        report_text = f"📊 *Статистика за {month_names[month]} {year} года*\n\n"
-
-        for channel in channels:
-            stats = channel_stats.get(channel, {
-                'total_posts': 0,
-                'avg_views': 0,
-                'total_reactions': 0,
-                'total_forwards': 0,
-                'total_comments': 0,
-                'coverage_per_reaction': 0,
-                'coverage_per_forward': 0,
-                'coverage_per_comment': 0
-            })
-
-            report_text += f"*{channel}*\n"
-            report_text += f"Количество постов: {stats['total_posts']}\n"
-            report_text += f"Среднее количество просмотров на пост: {stats['avg_views']}\n"
-            report_text += f"Реакции: {stats['total_reactions']}\n"
-            report_text += f"Пересылки: {stats['total_forwards']}\n"
-            report_text += f"Комментарии: {stats['total_comments']}\n"
-            report_text += f"Охваты на реакции: {stats['coverage_per_reaction']}\n"
-            report_text += f"Охваты на пересылки: {stats['coverage_per_forward']}\n"
-            report_text += f"Охваты на комментарии: {stats['coverage_per_comment']}\n\n"
-
-        await processing_msg.edit_text(report_text, parse_mode='Markdown')
-
-    except ValueError:
-        await update.message.reply_text("❌ Год и месяц должны быть числовыми значениями")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка при генерации отчета: {str(e)}")
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Начало диалога с ботом"""
+async def monthly_report_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начало диалога для получения ежемесячного отчета"""
     await update.message.reply_text(
-        "Привет! Я PostSpy - бот для анализа Telegram-каналов за месяц!\n\n"
-        "Отправь ссылки на Telegram-каналы для анализа.\n"
-        "Можно отправить 4 телеграмм канала для анализа.\n\n"
+        "📊 *Ежемесячный отчет по Telegram-каналам*\n\n"
+        "Я могу сгенерировать подробную статистику по 1-4 каналам "
+        "за любой месяц.\n\n"
+        "📌 *Что я делаю:*\n"
+        "1. Собираю все посты за указанный месяц\n"
+        "2. Анализирую просмотры, реакции, комментарии и пересылки\n"
+        "3. Рассчитываю средние значения и охваты\n"
+        "4. Формирую удобный отчет\n\n"
+        "✍️ *Отправьте ссылки на каналы:*\n"
+        "Можно указать от 1 до 4 каналов через запятую или с новой строки\n\n"
         "Примеры:\n"
         "@warningbuffet\n"
-        "@KOTyarovki, @drawstoks\n"
-        "https://t.me/warningbuffet, @CrashSoon\n\n"
-        "Главное, чтобы телеграмм каналы были публичные!"
+        "@warningbuffet, @KOTyarovki\n"
+        "@warningbuffet, @KOTyarovki, @drawstoks, @CrashSoon\n\n"
+        "Или напишите /cancel для отмены",
+        parse_mode='Markdown'
     )
-    init_db()
-    context.user_data.clear()  # Очищаем данные предыдущего диалога
-    return ASK_LINK
+
+    return ASK_CHANNELS
 
 
-async def get_channel_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Получение ссылок на каналы"""
+async def get_report_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получение списка каналов для отчета"""
     raw_text = update.message.text
     channels = []
 
+    # Парсим каналы из сообщения
     for line in raw_text.split('\n'):
         for channel in line.split(','):
             channel = channel.strip()
-            if channel and (channel.startswith('@') or channel.startswith('https://t.me/')):
-                channels.append(channel)
+            if channel:
+                # Проверяем формат ссылки
+                if channel.startswith('@') or channel.startswith('https://t.me/'):
+                    channels.append(channel)
+                elif 't.me/' in channel:
+                    # Добавляем https:// если нет
+                    if not channel.startswith('http'):
+                        channel = f"https://{channel}"
+                    channels.append(channel)
+                else:
+                    # Пробуем добавить @ если это просто имя
+                    channels.append(f"@{channel}")
 
+    # Проверяем количество каналов
     if not channels:
         await update.message.reply_text(
             "❌ Не найдено валидных ссылок на каналы.\n\n"
             "Пожалуйста, отправьте ссылки в формате:\n"
             "@channelname или https://t.me/channelname\n\n"
-            "Можно несколько через запятую или с новой строки.\n"
-            "Пример: @telegram, https://t.me/durov"
+            "Можно от 1 до 4 каналов через запятую."
         )
-        return ASK_LINK
+        return ASK_CHANNELS
 
+    if len(channels) > 4:
+        await update.message.reply_text(
+            "❌ Слишком много каналов!\n"
+            "Максимум можно указать 4 канала.\n"
+            "Пожалуйста, укажите от 1 до 4 каналов:"
+        )
+        return ASK_CHANNELS
+
+    # Сохраняем каналы
     context.user_data["channels"] = channels
 
-    # Добавляем выбор периода
+    # Спрашиваем месяц
     await update.message.reply_text(
-        f"✅ Найдено каналов: {len(channels)}\n"
-        f"📺 Каналы: {', '.join(channels[:5])}"
-        + (f"\n... и ещё {len(channels) - 5} каналов" if len(channels) > 5 else "") + "\n\n"
-        "📅 Выберите период для сбора постов:\n\n"
-        "1️⃣ /last_week - посты за последнюю неделю\n"
-        "2️⃣ /last_month - посты за последний месяц\n"
-        "3️⃣ /all - все доступные посты (до 1000)\n"
-        "4️⃣ /custom - указать количество дней\n\n"
-        "Или напишите /cancel для отмены"
+        f"✅ Получено каналов: {len(channels)}\n"
+        f"📺 Каналы: {', '.join(channels)}\n\n"
+        "📅 *За какой месяц нужен отчет?*\n\n"
+        "Введите номер месяца (1-12):\n"
+        "1 - Январь\n"
+        "2 - Февраль\n"
+        "3 - Март\n"
+        "... и так далее\n\n"
+        "Или напишите /cancel для отмены",
+        parse_mode='Markdown'
     )
-    return ASK_PERIOD
+
+    return ASK_MONTH
 
 
-async def choose_period(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка выбора периода"""
-    period_command = update.message.text
-
-    if period_command == "/last_week":
-        days = 7
-    elif period_command == "/last_month":
-        days = 30
-    elif period_command == "/all":
-        days = 0  # 0 = все посты
-    elif period_command == "/custom":
-        await update.message.reply_text(
-            "🔢 Введите количество дней для сбора постов (например: 14, 60, 90):\n"
-            "Максимум: 365 дней"
-        )
-        return ASK_PERIOD
-
+async def get_report_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получение месяца для отчета"""
     try:
-        if period_command == "/custom":
-            days = int(update.message.text)
-        else:
-            context.user_data["days"] = days
+        month = int(update.message.text)
 
-        if days > 365:
-            await update.message.reply_text("❌ Период не может превышать 365 дней. Введите меньшее число:")
-            return ASK_PERIOD
+        if month < 1 or month > 12:
+            await update.message.reply_text(
+                "❌ Месяц должен быть от 1 до 12.\n"
+                "Пожалуйста, введите число от 1 до 12:"
+            )
+            return ASK_MONTH
 
-        if days < 0:
-            await update.message.reply_text("❌ Период не может быть отрицательным. Введите положительное число:")
-            return ASK_PERIOD
+        # Сохраняем месяц
+        context.user_data["month"] = month
 
-        context.user_data["days"] = days
-
-        # Формируем текст о периоде
-        if days == 0:
-            period_text = "все доступные посты"
-        elif days == 7:
-            period_text = "последнюю неделю"
-        elif days == 30:
-            period_text = "последний месяц"
-        else:
-            period_text = f"последние {days} дней"
-
+        # Спрашиваем год
+        current_year = datetime.now().year
         await update.message.reply_text(
-            f"📅 Период: {period_text}\n\n"
-            "🔢 Сколько последних постов нужно собрать с каждого канала? 📊\n\n"
-            "Введите число (например: 50):\n"
-            "• 0 = все посты за указанный период\n"
-            "• Максимум: 1000 постов"
+            f"✅ Месяц: {month}\n\n"
+            "📅 *За какой год нужен отчет?*\n\n"
+            f"Введите год (например, {current_year}):\n"
+            f"Минимум: {current_year - 1}\n"
+            f"Максимум: {current_year}\n\n"
+            "Или напишите /cancel для отмены",
+            parse_mode='Markdown'
         )
-        return ASK_LIMIT
+
+        return ASK_YEAR
 
     except ValueError:
-        await update.message.reply_text("❌ Пожалуйста, введите число:")
-        return ASK_PERIOD
+        await update.message.reply_text(
+            "❌ Пожалуйста, введите число от 1 до 12:"
+        )
+        return ASK_MONTH
 
 
-async def get_post_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Получение лимита постов и запуск сбора"""
+async def get_report_year(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получение года и генерация отчета"""
     try:
-        limit = int(update.message.text)
+        year = int(update.message.text)
+        current_year = datetime.now().year
 
-        if limit < 0 or limit > 1000:
-            await update.message.reply_text("❌ Лимит должен быть от 0 до 1000:")
-            return ASK_LIMIT
-
-        context.user_data["limit"] = limit
-        channels = context.user_data["channels"]
-        days = context.user_data.get("days", 0)
-
-        # Отправляем сообщение
-        processing_msg = await update.message.reply_text("🔄 Начинаю сбор данных...")
-
-        # Очищаем таблицу
-        clear_posts_table()
-
-        # ВЫБОР ФУНКЦИИ В ЗАВИСИМОСТИ ОТ ПЕРИОДА
-        try:
-            if days == 30:  # Особый случай - месяц
-                print(f"[HANDLER] Используем специальную функцию для месяца")
-                messages = await get_messages_last_month(channels, limit)
-            else:
-                print(f"[HANDLER] Используем обычную функцию (days={days}, limit={limit})")
-                messages = await get_last_messages(channels, limit, days)
-
-            if not messages:
-                await processing_msg.edit_text(
-                    "❌ Не удалось собрать посты.\n\n"
-                    "Проверьте:\n"
-                    "1. Каналы публичные и доступны\n"
-                    "2. В каналах есть посты\n"
-                    "3. Попробуйте выбрать /all для всех постов"
-                )
-                return ConversationHandler.END
-
-            # Сохраняем и экспортируем
-            for msg in messages:
-                save_post(msg)
-
-            excel_filename = f"posts_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-            export_posts_to_excel(excel_filename)
-
-            # Статистика
-            stats = (
-                f"✅ Готово! Собрано: {len(messages)} постов\n"
-                f"📁 Файл: {excel_filename}"
+        if year < current_year - 1 or year > current_year:
+            await update.message.reply_text(
+                f"❌ Год должен быть от {current_year - 1} до {current_year}.\n"
+                "Пожалуйста, введите корректный год:"
             )
+            return ASK_YEAR
 
-            await processing_msg.edit_text(stats)
+        # Получаем данные из контекста
+        channels = context.user_data.get("channels", [])
+        month = context.user_data.get("month", 1)
 
-            with open(excel_filename, "rb") as file:
-                await update.message.reply_document(
-                    document=file,
-                    filename=excel_filename,
-                    caption=f"📊 Результат анализа"
-                )
+        # Названия месяцев для красивого вывода
+        month_names = [
+            "", "январь", "февраль", "март", "апрель", "май", "июнь",
+            "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"
+        ]
 
-        except Exception as e:
-            await processing_msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
-            return ConversationHandler.END
+        month_name = month_names[month]
+
+        # Сообщение о начале сбора
+        processing_msg = await update.message.reply_text(
+            f"🔄 Собираю статистику за {month_name} {year} года...\n"
+            f"Каналы: {', '.join(channels)}\n\n"
+            "Это может занять несколько минут..."
+        )
+
+        # Генерируем отчет
+        channel_stats = await generate_monthly_report_for_channels(channels, year, month)
+
+        # Формируем отчет
+        report_text = f"📊 *Отчет за {month_name} {year} года*\n\n"
+        report_text += f"*Период:* {month_name.capitalize()} {year}\n"
+        report_text += f"*Количество каналов:* {len(channels)}\n"
+        report_text += "*" * 40 + "\n\n"
+
+        # Статистика по каждому каналу
+        for i, channel in enumerate(channels, 1):
+            stats = channel_stats.get(channel, {})
+
+            report_text += f"*{i}. {channel}*\n"
+            report_text += f"   📝 Постов: {stats.get('total_posts', 0)}\n"
+            report_text += f"   📊 Средний просмотров на пост: {stats.get('avg_views', 0)}\n"
+            report_text += f"   ❤️ Реакций: {stats.get('avg_reactions', 0)}\n"
+            report_text += f"   💬 Комментариев: {stats.get('avg_comments', 0)}\n"
+            report_text += f"   🔄 Пересылок: {stats.get('avg_forwards', 0)}\n\n"
+
+            # Охваты (если есть данные)
+            if stats.get('total_reactions', 0) > 0:
+                report_text += f"   📈 Охват на реакцию: {stats.get('coverage_per_reaction', 0)}\n"
+            if stats.get('total_comments', 0) > 0:
+                report_text += f"   📈 Охват на комментарий: {stats.get('coverage_per_comment', 0)}\n"
+            if stats.get('total_forwards', 0) > 0:
+                report_text += f"   📈 Охват на пересылку: {stats.get('coverage_per_forward', 0)}\n"
+
+            report_text += "\n" + "-" * 30 + "\n\n"
+
+        report_text += "*" * 40 + "\n"
+        report_text += "✅ Отчет сгенерирован!\n"
+        report_text += "Для нового отчета отправьте /monthly"
+
+        # Отправляем отчет
+        await processing_msg.edit_text(report_text, parse_mode='Markdown')
 
         return ConversationHandler.END
 
     except ValueError:
-        await update.message.reply_text("❌ Введите число:")
-        return ASK_LIMIT
+        await update.message.reply_text(
+            "❌ Пожалуйста, введите корректный год:"
+        )
+        return ASK_YEAR
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Ошибка при генерации отчета: {str(e)[:100]}"
+        )
+        return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отмена диалога"""
     await update.message.reply_text(
         "❌ Диалог отменен.\n\n"
-        "Для начала нового анализа отправьте /start"
+        "Для нового отчета отправьте /monthly\n"
+        "Для начала работы отправьте /start"
     )
-    context.user_data.clear()  # Очищаем данные пользователя
+    context.user_data.clear()
     return ConversationHandler.END
 
 
-# Дополнительные команды для удобства
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начало работы с ботом"""
+    await update.message.reply_text(
+        "🤖 *Добро пожаловать в PostSpy!*\n\n"
+        "Я - бот для анализа статистики Telegram-каналов.\n\n"
+        "📊 *Что я умею:*\n"
+        "✅ Генерировать ежемесячные отчеты по 1-4 каналам\n"
+        "✅ Анализировать просмотры, реакции, комментарии\n"
+        "✅ Рассчитывать средние значения и охваты\n\n"
+        "🛠 *Доступные команды:*\n"
+        "/monthly - 📊 Получить ежемесячный отчет\n"
+        "/help - 📖 Справка по использованию\n"
+        "/cancel - ❌ Отменить текущий диалог\n\n"
+        "Чтобы начать анализ, отправьте команду: /monthly ",
+        parse_mode='Markdown'
+    )
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать справку"""
+    """Справка по использованию бота"""
     help_text = """
-🤖 *PostSpy - Бот для анализа Telegram-каналов*
+📖 Справка по использованию PostSpy
 
-*Команды:*
-/start - Начать анализ каналов
-/help - Показать эту справку
-/cancel - Отменить текущий диалог
+Основная команда:
+/monthly - получить ежемесячный отчет по каналам
 
-*Как использовать:*
-1. Отправьте /start
-2. Введите ссылки на каналы (можно несколько)
-3. Выберите период сбора
-4. Укажите лимит постов
+Как получить отчет:
+1. Отправьте /monthly
+2. Введите ссылки на каналы (1-4 канала)
+3. Укажите месяц (1-12)
+4. Укажите год
 
-*Поддерживаемые форматы ссылок:*
+Форматы ссылок на каналы:
 • @username
 • https://t.me/username
 • https://t.me/joinchat/...
+• username (я сам добавлю @)
 
-*Примеры:*
-@telegram
-https://t.me/durov
-@channel1, @channel2, https://t.me/channel3
+Примеры использования:
+• Просто отправьте /monthly и следуйте инструкциям
+• Можно анализировать от 1 до 4 каналов за раз
+
+Что анализируется:
+✅ Количество постов
+✅ Просмотры (общие и средние)
+✅ Реакции
+✅ Комментарии
+✅ Пересылки
+✅ Охваты на взаимодействия
+
+Другие команды:
+/cancel - отменить текущий диалог
+/help - показать эту справку
     """
-    await update.message.reply_text(help_text, parse_mode='Markdown')
 
-
-async def test_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для тестирования канала"""
-    if not context.args:
-        await update.message.reply_text("Укажите канал: /test @channelname")
-        return
-
-    channel_link = context.args[0]
-    await update.message.reply_text(f"🔍 Тестирую канал {channel_link}...")
-
-    from utils.message_parser import test_channel
-    success = await test_channel(channel_link)
-
-    if success:
-        await update.message.reply_text("✅ Канал доступен")
-    else:
-        await update.message.reply_text("❌ Канал недоступен")
+    await update.message.reply_text(help_text)

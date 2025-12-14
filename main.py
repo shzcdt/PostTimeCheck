@@ -1,13 +1,14 @@
-# main.py — запускает Telegram-бота
+# main.py — запускает Telegram-бота с функцией ежемесячных отчетов
 import asyncio
 import os
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 from dotenv import load_dotenv
-from telegram.ext import ConversationHandler, MessageHandler, filters
+
 from handlers import (
-    start, get_channel_link, choose_period, get_post_limit, cancel, help_command,
-    ASK_LINK, ASK_PERIOD, ASK_LIMIT, test_channel_command, monthly_report_command
+    start, help_command, cancel,
+    monthly_report_start, get_report_channels, get_report_month, get_report_year,
+    ASK_CHANNELS, ASK_MONTH, ASK_YEAR
 )
 from telethon_client import init_telethon
 
@@ -22,19 +23,13 @@ async def main():
     # Создаем приложение бота
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Добавляем обработчик диалога
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+    # Обработчик для ежемесячного отчета
+    monthly_report_handler = ConversationHandler(
+        entry_points=[CommandHandler("monthly", monthly_report_start)],
         states={
-            ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_channel_link)],
-            ASK_PERIOD: [
-                CommandHandler("last_week", choose_period),
-                CommandHandler("last_month", choose_period),
-                CommandHandler("all", choose_period),
-                CommandHandler("custom", choose_period),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, choose_period)
-            ],
-            ASK_LIMIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_post_limit)],
+            ASK_CHANNELS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_report_channels)],
+            ASK_MONTH: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_report_month)],
+            ASK_YEAR: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_report_year)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
@@ -43,13 +38,17 @@ async def main():
     )
 
     # Добавляем обработчики команд
-    app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(monthly_report_handler)
     app.add_handler(CommandHandler("cancel", cancel))
-    app.add_handler(CommandHandler("test", test_channel_command))
-    app.add_handler(CommandHandler("monthly_report", monthly_report_command))
+
     print("✅ Бот запущен и готов к работе!")
-    print(f"🤖 Имя бота: @{(await app.bot.getMe()).username}")
+    print("🤖 Основная функция: генерация ежемесячных отчетов по 1-4 каналам")
+
+    # Получаем информацию о боте
+    bot_info = await app.bot.getMe()
+    print(f"🤖 Имя бота: @{bot_info.username}")
 
     # Запускаем бота
     await app.initialize()
