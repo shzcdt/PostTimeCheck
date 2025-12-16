@@ -1,10 +1,9 @@
 # handlers.py — команды бота (/start, /monthly_report)
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler
-from datetime import datetime, timedelta
-import asyncio
+from datetime import datetime
 
-from utils.message_parser import get_last_messages, get_monthly_messages
+from utils.message_parser import get_monthly_messages
 
 # Константы для ConversationHandler
 ASK_CHANNELS, ASK_MONTH, ASK_YEAR = range(3)
@@ -257,7 +256,7 @@ async def get_report_year(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             report_text += f"*{i}. {channel}*\n"
             report_text += f"   📝 Постов: {stats.get('total_posts', 0)}\n"
-            report_text += f"   📊 Средний просмотров на пост: {stats.get('avg_views', 0)}\n"
+            report_text += f"   📊 Среднее количество просмотров на пост: {stats.get('avg_views', 0)}\n"
             report_text += f"   ❤️ Реакций: {stats.get('avg_reactions', 0)}\n"
             report_text += f"   💬 Комментариев: {stats.get('avg_comments', 0)}\n"
             report_text += f"   🔄 Пересылок: {stats.get('avg_forwards', 0)}\n\n"
